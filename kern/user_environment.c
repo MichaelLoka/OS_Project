@@ -65,6 +65,7 @@ struct ProgramSegment PROGRAM_SEGMENT_FIRST( uint8* ptr_program_start);
 // Helper functions to be used below
 void complete_environment_initialization(struct Env* e);
 void set_environment_entry_point(struct Env* e, uint8* ptr_program_start);
+void free_Page_table(struct Env *e,struct WorkingSetElement * elem);
 
 ///===================================================================================
 /// To add FOS support for new user program, just add the appropriate lines like below
@@ -827,59 +828,67 @@ void start_env_free(struct Env *e)
 
 void env_free(struct Env *e)
 {
-	__remove_pws_user_pages(e);
+	//__remove_pws_user_pages(e);
 
 	//TODO: [PROJECT 2021 - BONUS1] Exit [env_free()]
 
 	//YOUR CODE STARTS HERE, remove the panic and write your code ----
-	panic("env_free() is not implemented yet...!!");
 
 	// [1] Free the pages in the PAGE working set from the main memory
+//	for(int i = 0; i < e->page_WS_max_size; i++)
+//		env_page_ws_clear_entry(e,i);
+	struct WorkingSetElement* element = NULL;
+	LIST_FOREACH(element, &e->ActiveList)
+	{
+		unmap_frame(e->env_page_directory, (void*)element->virtual_address);
+		pt_set_page_permissions(e,element->virtual_address,0,PERM_PRESENT);
+
+	}
+	LIST_FOREACH(element, &e->SecondList)
+	{
+		unmap_frame(e->env_page_directory, (void*)element->virtual_address);
+		pt_set_page_permissions(e,element->virtual_address,0,PERM_PRESENT);
+	}
+
 	// [2] Free LRU lists
 	// [3] Free all TABLES from the main memory
-	// [4] Free the page DIRECTORY from the main memory
+	LIST_FOREACH(element, &e->ActiveList)
+	{
+		LIST_REMOVE(&e->ActiveList , element);
 
-	uint32 Start = 0;
-	while (Start < USER_TOP){
-		struct Frame_Info *ptr_frame_info;
-		uint32 *ptr_page_table = NULL;
-		uint32 Perms = pt_get_page_permissions(e, Start);
-		ptr_frame_info = get_frame_info(e->env_page_directory, (void*)Start, &ptr_page_table);
-		if ((Perms & PERM_BUFFERED)){
-			free_frame(ptr_frame_info);
-			pt_clear_page_table_entry(e, Start);
-		}
-		if ((Perms & PERM_PRESENT)){
-			unmap_frame(e->env_page_directory, (void*)Start);
-			pt_clear_page_table_entry(e, Start);
-		}
-		env_page_ws_invalidate(e, Start);
-		pf_remove_env_page(e, Start);
-		Start += PAGE_SIZE;
+		free_Page_table(e,element);
 	}
-	Start = 0;
-	while (Start < e->page_WS_max_size){
-		env_page_ws_clear_entry(e, Start);
-		++Start;
+	LIST_FOREACH(element, &e->SecondList)
+	{
+		LIST_REMOVE(&e->SecondList , element);
+
+		free_Page_table(e,element);
 	}
-	Start = 0;
-	while (Start < USER_TOP){
-		uint32 *ptr_page_table = NULL;
-		get_page_table(e->env_page_directory, (void*)Start, &ptr_page_table);
-		if (ptr_page_table){
-			struct Frame_Info *ptr_frame_info = to_frame_info(kheap_physical_address((uint32)ptr_page_table));
-			free_frame(ptr_frame_info);
-		}
-		Start += PAGE_SIZE * 1024;
-	}
-	struct Frame_Info *ptr_frame_info = to_frame_info(e->env_cr3);
-	free_frame(ptr_frame_info);
+	// [4] Free the page DIRECTORY from the main memory
+	struct Frame_Info* frame_info_of_remove = NULL;
+	frame_info_of_remove = to_frame_info(e->env_cr3);
+	free_frame(frame_info_of_remove);
 
 	//YOUR CODE ENDS HERE --------------------------------------------
 
 	//Don't change these lines:
 	pf_free_env(e); /*(ALREADY DONE for you)*/ // (removes all of the program pages from the page file)
 	free_environment(e); /*(ALREADY DONE for you)*/ // (frees the environment (returns it back to the free environment list))
+}
+void free_Page_table(struct Env *e,struct WorkingSetElement * elem)
+{
+	uint32* page_table = NULL;
+	get_page_table(e->env_page_directory,(void*)(elem->virtual_address),&page_table);
+	if(page_table != NULL)
+	{
+
+		struct Frame_Info* frame_info_of_remove = NULL;
+		frame_info_of_remove = to_frame_info((e->env_page_directory[PDX(elem->virtual_address)] >> 12) * PAGE_SIZE);
+		free_frame(frame_info_of_remove);
+		uint32 * ptr_pgdir = e->env_page_directory ;
+		ptr_pgdir[PDX(elem->virtual_address)] = 0 ;
+
+	}
 }
 
 void __env_free_with_buffering(struct Env *e)
