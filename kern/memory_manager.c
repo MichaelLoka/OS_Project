@@ -766,22 +766,25 @@ int loadtime_map_frame(uint32 *ptr_page_directory, struct Frame_Info *ptr_frame_
 
 void allocateMem(struct Env* e, uint32 virtual_address, uint32 size)
 {
-	//TODO: [PROJECT 2021 - [2] User Heap] allocateMem() [Kernel Side]
-	// Write your code here, remove the panic and write your code
-	//panic("allocateMem() is not implemented yet...!!");
+    //TODO: [PROJECT 2021 - [2] User Heap] allocateMem() [Kernel Side]
+    // Write your code here, remove the panic and write your code
+    //panic("allocateMem() is not implemented yet...!!");
 
-	int numberOfPages = ROUNDUP(size,PAGE_SIZE)/PAGE_SIZE;
-	for(int i=0;i<numberOfPages;++i)
-	{
-		int ret = pf_add_empty_env_page(e, virtual_address, 0);
-		if(ret == E_NO_PAGE_FILE_SPACE){
-			break;
-		}
-		virtual_address+=PAGE_SIZE;
-	}
+    uint32 virtual_address_below = ROUNDDOWN(virtual_address,PAGE_SIZE);
+    uint32 virtual_address_max = ROUNDUP(virtual_address_below+size,PAGE_SIZE);
 
-	//This function should allocate ALL pages of the required range in the PAGE FILE
-	//and allocate NOTHING in the main memory
+    int numOfPages = (virtual_address_max - virtual_address_below )/ PAGE_SIZE;
+
+    for(int i = 0 ; i< numOfPages ; i++)
+    {
+        int ret = pf_add_empty_env_page(e, virtual_address_below,0);
+        if(ret == E_NO_PAGE_FILE_SPACE)
+            break;
+        virtual_address_below += PAGE_SIZE;
+    }
+
+    //This function should allocate ALL pages of the required range in the PAGE FILE
+    //and allocate NOTHING in the main memory
 }
 
 
@@ -790,53 +793,62 @@ void allocateMem(struct Env* e, uint32 virtual_address, uint32 size)
 void freeMem(struct Env* e, uint32 virtual_address, uint32 size)
 {
 
-	//TODO: [PROJECT 2021 - [2] User Heap] freeMem() [Kernel Side]
-	// Write your code here, remove the panic and write your code
+    //TODO: [PROJECT 2021 - [2] User Heap] freeMem() [Kernel Side]
+    // Write your code here, remove the panic and write your code
 	//panic("freeMem() is not implemented yet...!!");
 
-	uint32 Start = virtual_address;
-	while (Start < virtual_address + size){
-		struct Frame_Info *ptr_frame_info = NULL;
-		uint32 *ptr_page_table = NULL;
-		uint32 Perms = pt_get_page_permissions(e, Start);
-		ptr_frame_info = get_frame_info(e->env_page_directory, (void*)Start, &ptr_page_table);
-		if ((Perms & PERM_BUFFERED)){
-			free_frame(ptr_frame_info);
-			pt_clear_page_table_entry(e, Start);
-		}
-		if ((Perms & PERM_PRESENT)){
-			unmap_frame(e->env_page_directory, (void*)Start);
-			pt_clear_page_table_entry(e, Start);
-		}
-		env_page_ws_invalidate(e, Start);
-		pf_remove_env_page(e, Start);
-		Start += PAGE_SIZE;
-	}
-	Start = ROUNDDOWN(virtual_address, PAGE_SIZE * 1024);
-	while (Start < virtual_address + size){
-		struct Frame_Info *ptr_frame_info = NULL;
-		uint32 *ptr_page_table = NULL;
-		ptr_frame_info = get_frame_info(e->env_page_directory, (void*)Start, &ptr_page_table);
-		if (ptr_page_table){
-			int c = 0;
-			while (c < 1024){
-				if (ptr_page_table[c])break;
-				++c;
-			}
-			if (c == 1024){
-				ptr_frame_info = to_frame_info(kheap_physical_address((uint32)ptr_page_table));
-				ptr_frame_info->references = 0;
-				free_frame(ptr_frame_info);
-				pd_clear_page_dir_entry(e, Start);
-			}
-		}
-		Start += PAGE_SIZE * 1024;
-	}
+	size = ROUNDUP(size, PAGE_SIZE);
+	uint32 va = virtual_address;
+	uint32 v_add = virtual_address;
+	struct WorkingSetElement* looper = NULL;
+	int num = size / PAGE_SIZE;
 
-	//This function should:
-	//1. Free ALL pages of the given range from the Page File
-	//2. Free ONLY pages that are resident in the working set from the memory
-	//3. Removes ONLY the empty page tables (i.e. not used) (no pages are mapped in the table)
+	for (int i = 0; i < num; i++) {
+		pf_remove_env_page(e, v_add);
+		v_add += PAGE_SIZE;
+	}
+	int free = 0;
+	struct Frame_Info* ptr_frame_info = NULL;
+	LIST_FOREACH(looper, &(e->ActiveList))
+	{
+
+		if (looper->virtual_address >= virtual_address && looper->virtual_address < virtual_address + size)
+		{
+			LIST_REMOVE(&(e->ActiveList), looper);
+			unmap_frame(e->env_page_directory, (void*)looper->virtual_address);
+			looper->empty = 1;
+			LIST_INSERT_HEAD(&(e->PageWorkingSetList), looper);
+			if (e->SecondList.size != 0) {
+				struct WorkingSetElement* temp = LIST_FIRST(&(e->SecondList));
+				LIST_INSERT_TAIL(&(e->ActiveList), temp);
+				LIST_REMOVE(&(e->SecondList), temp);
+				pt_set_page_permissions(e, temp->virtual_address, PERM_PRESENT, 0);
+
+			}
+
+			uint32* ptr = NULL;
+			get_page_table(e->env_page_directory, (void*)looper->virtual_address, &ptr);
+			if (ptr != NULL)
+			{
+				int flag = 0;
+				for (int i = 0; i < 1024; i++)
+				{
+					if (ptr[i] != 0)
+					{
+						flag = 1;
+						break;
+					}
+				}
+				if (flag == 0)
+				{
+					struct Frame_Info* frame_info_of_remove = NULL;
+					frame_info_of_remove = to_frame_info((e->env_page_directory[PDX(looper->virtual_address)] >> 12) * PAGE_SIZE);
+					free_frame(frame_info_of_remove);
+					pd_clear_page_dir_entry(e, looper->virtual_address);
+				}
+			}
+		}
+	}
 }
 
 void __freeMem_with_buffering(struct Env* e, uint32 virtual_address, uint32 size)
