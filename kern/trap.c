@@ -481,10 +481,12 @@ void page_fault_handler(struct Env * curenv, uint32 fault_va)
 {
 	//TODO: [PROJECT 2021 - [1] PAGE FAULT HANDLER]
 	// Write your code here, remove the panic and write your code
+//	cprintf("fault_va Round Down: %x\n",fault_va);
 
 	fault_va = ROUNDDOWN(fault_va,PAGE_SIZE);
+
 	//if the faulted address in the second list
-	if(curenv->SecondList.size != 0)
+	if(curenv->SecondList.size != 0 && curenv->SecondListSize != 0)
 	{
 		struct WorkingSetElement *element = NULL;
 		LIST_FOREACH(element, &(curenv->SecondList))
@@ -522,7 +524,7 @@ void page_fault_handler(struct Env * curenv, uint32 fault_va)
 	if (ret == E_PAGE_NOT_EXIST_IN_PF)
 	{
 		//check if the faulted page in user stack
-		if(fault_va < USTACKTOP && fault_va > USTACKBOTTOM)
+		if(fault_va < USTACKTOP && fault_va >= USTACKBOTTOM)
 		{
 			//add to the page file
 			int ret = pf_add_empty_env_page(curenv, fault_va, 1);
@@ -530,7 +532,7 @@ void page_fault_handler(struct Env * curenv, uint32 fault_va)
 				panic("ERROR: No enough virtual space on the page file");
 		}
 		else
-			panic("<User> ERROR: Illegal memory access to page that's not exist in Page File and not STACK");
+			panic("ERROR: Illegal memory access to page that's not exist in Page File and not STACK");
 	}
 
 	if(LIST_SIZE(&(curenv->PageWorkingSetList)) != 0)
@@ -539,18 +541,23 @@ void page_fault_handler(struct Env * curenv, uint32 fault_va)
 	}
 	else
 	{
-		struct WorkingSetElement* victem = LIST_LAST(&(curenv->SecondList));
-		uint32 perms = pt_get_page_permissions(curenv, victem->virtual_address);
-		if(perms & PERM_MODIFIED)
+		if(curenv->SecondListSize != 0)
 		{
-			uint32* pagetable = NULL;
-			struct Frame_Info * frame = get_frame_info(curenv->env_page_directory, (void*)(victem->virtual_address), &pagetable);
-			pf_update_env_page(curenv, (void*)(victem->virtual_address), frame);
-		}
+			struct WorkingSetElement* victem = LIST_LAST(&(curenv->SecondList));
+			uint32 perms = pt_get_page_permissions(curenv, victem->virtual_address);
+			if(perms & PERM_MODIFIED)
+			{
+				uint32* pagetable = NULL;
+				struct Frame_Info * frame = get_frame_info(curenv->env_page_directory, (void*)(victem->virtual_address), &pagetable);
+				pf_update_env_page(curenv, (void*)(victem->virtual_address), frame);
+			}
 
-		unmap_frame(curenv->env_page_directory, (void*)(victem->virtual_address));
-		LIST_REMOVE(&(curenv->SecondList),victem);
-		LIST_INSERT_HEAD(&(curenv->PageWorkingSetList),victem);
+			unmap_frame(curenv->env_page_directory, (void*)(victem->virtual_address));
+			LIST_REMOVE(&(curenv->SecondList),victem);
+			LIST_INSERT_HEAD(&(curenv->PageWorkingSetList),victem);
+			victem->empty = 1;
+			pt_set_page_permissions(curenv,victem->virtual_address,0,PERM_PRESENT);
+		}
 		Placment(curenv,fault_va);
 
 	}
@@ -574,16 +581,48 @@ void Placment(struct Env * curenv, uint32 fault_va)
 
 	if(curenv->ActiveListSize == curenv->ActiveList.size)
 	{
+		if(curenv->SecondListSize != 0)
+		{
 		struct WorkingSetElement *lastelement = LIST_LAST(&(curenv->ActiveList));
 		LIST_REMOVE(&(curenv->ActiveList),lastelement);
 		LIST_INSERT_HEAD(&(curenv->SecondList),lastelement);
 		pt_set_page_permissions(curenv,lastelement->virtual_address,0,PERM_PRESENT);
+		}
+		else
+		{
+			struct WorkingSetElement* victem = LIST_LAST(&(curenv->ActiveList));
+			uint32 perms = pt_get_page_permissions(curenv, victem->virtual_address);
+			if(perms & PERM_MODIFIED)
+			{
+//				cprintf("Modifed\n");
+				uint32* pagetable = NULL;
+				struct Frame_Info * frame = get_frame_info(curenv->env_page_directory, (void*)(victem->virtual_address), &pagetable);
+//				cprintf("victem address: %x\n",victem->virtual_address);
+				int ret = pf_update_env_page(curenv, (void*)(victem->virtual_address), frame);
+				if(ret ==  E_PAGE_NOT_EXIST_IN_PF)
+				{
+//					cprintf("not in the pagefile\n");
+					pf_add_empty_env_page(curenv, victem->virtual_address, 1);
+					pf_update_env_page(curenv, (void*)(victem->virtual_address), frame);
+				}
+
+//				cprintf("UPdated\n");
+			}
+
+			unmap_frame(curenv->env_page_directory, (void*)(victem->virtual_address));
+			LIST_REMOVE(&(curenv->ActiveList),victem);
+			LIST_INSERT_HEAD(&(curenv->PageWorkingSetList),victem);
+			victem->empty = 1;
+			pt_set_page_permissions(curenv,victem->virtual_address,0,PERM_PRESENT);
+//			print_page_working_set_or_LRUlists(curenv);
+		}
 	}
 
 
 	//Get an element from a working set
 	struct WorkingSetElement *WS_element =  LIST_FIRST(&(curenv->PageWorkingSetList));
 	WS_element->virtual_address = fault_va;
+	WS_element->empty = 0;
 
 
 
